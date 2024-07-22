@@ -1,0 +1,62 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO donations (amount, title, description, webhook, user_id) VALUES ($1, $2, $3, $4, $5) RETURNING *",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "amount",
+        "type_info": "Numeric"
+      },
+      {
+        "ordinal": 2,
+        "name": "title",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "description",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "webhook",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 5,
+        "name": "wallet_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 6,
+        "name": "user_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Numeric",
+        "Varchar",
+        "Text",
+        "Varchar",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "31e76fdc811ad867c833c7049c477942db60a40ceebeae63ea08334c9202b40c"
+}
