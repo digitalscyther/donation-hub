@@ -11,3 +11,7 @@ services:
   api:
     ports:
       - ${API_PORT}:3000
+
+  hdwallet:
+    ports:
+      - ${HDWALLET_PORT}:8000

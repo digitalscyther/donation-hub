@@ -34,6 +34,7 @@ services:
     networks:
       - db_network
       - rabbitmq_network
+      - hdwallet_network
     depends_on:
       - postgres
       - rabbitmq
@@ -51,8 +52,16 @@ services:
       - postgres
       - rabbitmq
 
+  hdwallet:
+    build:
+      context: hdwallet
+    networks:
+      - hdwallet_network
+
 networks:
   db_network:
     driver: bridge
   rabbitmq_network:
+    driver: bridge
+  hdwallet_network:
     driver: bridge
