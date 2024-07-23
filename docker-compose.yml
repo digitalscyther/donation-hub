@@ -12,19 +12,47 @@ services:
     networks:
       - db_network
 
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+#    environment:
+#      - RABBITMQ_DEFAULT_USER=rabbitmq
+#      - RABBITMQ_DEFAULT_PASS=rabbitmq
+#      - RABBITMQ_DEFAULT_VHOST=/
+    ports:
+      - 15672:15672
+    volumes:
+      - ./data/rabbitmq:/var/lib/rabbitmq
+    networks:
+      - rabbitmq_network
+
   api:
     build:
       context: api
     env_file:
       - .env
       - api/.env
-    ports:
-      - 3001:3000
     networks:
       - db_network
+      - rabbitmq_network
     depends_on:
       - postgres
+      - rabbitmq
+
+  collector:
+    build:
+      context: collector
+    env_file:
+      - .env
+      - collector/.env
+    networks:
+      - db_network
+      - rabbitmq_network
+    depends_on:
+      - postgres
+      - rabbitmq
 
 networks:
   db_network:
+    driver: bridge
+  rabbitmq_network:
     driver: bridge

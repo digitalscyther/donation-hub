@@ -11,6 +11,7 @@ use uuid::Uuid;
 mod error;
 mod models;
 mod state;
+mod amqp;
 
 use crate::error::AppError;
 use crate::models::{Donation, JsonDonation, User};
@@ -55,7 +56,10 @@ async fn create_donation(
     Json(j_in_donation): Json<JsonDonation>,
 ) -> Result<impl IntoResponse, AppError> {
     let in_donation: Donation = j_in_donation.into();
+    let wallet = in_donation.wallet_id.unwrap_or(Uuid::new_v4());
     let j_out_donation: JsonDonation = in_donation.create(user.id, &state.db).await?.into();
+
+    amqp::send(&wallet.to_string()).await;
 
     Ok((StatusCode::CREATED, Json(j_out_donation)))
 }
