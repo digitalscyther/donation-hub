@@ -5,6 +5,7 @@ use axum::extract::Request;
 use axum::middleware::{self, Next};
 use axum::response::Response;
 use log::{error, info};
+use reqwest::{Client};
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
@@ -12,6 +13,7 @@ mod error;
 mod models;
 mod state;
 mod amqp;
+mod hdwallet;
 
 use crate::error::AppError;
 use crate::models::{Donation, JsonDonation, User};
@@ -24,7 +26,9 @@ async fn main() {
     let db_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let db = models::get_connection(&db_url).await.expect("Failed to connect to database");
 
-    let app_state = AppState { db };
+    let http_client = Client::new();
+
+    let app_state = AppState { db, http_client };
     let routes = create_routes(Arc::new(app_state));
 
     let host = env::var("HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
@@ -56,10 +60,16 @@ async fn create_donation(
     Json(j_in_donation): Json<JsonDonation>,
 ) -> Result<impl IntoResponse, AppError> {
     let in_donation: Donation = j_in_donation.into();
-    let wallet = in_donation.wallet_id.unwrap_or(Uuid::new_v4());
+    let (_, address) = hdwallet::gen_wallet(&state.http_client)
+        .await
+        .map_err(|err_msg| {
+            error!("Failed gen wallet: {}", err_msg);
+            return AppError::InternalServerError
+        })?;
+
     let j_out_donation: JsonDonation = in_donation.create(user.id, &state.db).await?.into();
 
-    amqp::send(&wallet.to_string()).await;
+    amqp::send(&address).await;
 
     Ok((StatusCode::CREATED, Json(j_out_donation)))
 }

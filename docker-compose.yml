@@ -38,6 +38,7 @@ services:
     depends_on:
       - postgres
       - rabbitmq
+      - hdwallet
 
   collector:
     build:
