@@ -59,7 +59,7 @@ async fn j_print() {
     loop {
         info!("j_print: {}", c);
         c += 1;
-        time::sleep(time::Duration::from_secs(1)).await;
+        time::sleep(time::Duration::from_secs(10*60)).await;
     }
 }
 
