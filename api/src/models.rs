@@ -3,6 +3,7 @@ use serde_json::{json, Value};
 use sqlx::{Error, PgPool};
 use sqlx::postgres::PgQueryResult;
 use sqlx::types::{Uuid, Decimal};
+use regex::Regex;
 
 #[derive(Serialize, Deserialize)]
 pub struct JsonDonation {
@@ -137,11 +138,56 @@ pub struct WalletData {
     pub private_key: Option<String>,    // TODO cypher
 }
 
+impl WalletData {
+    pub fn validate(self) -> Result<(), String> {
+        if self.private_key.is_some() {
+            return Err("private_key not allowed".to_string())
+        }
+
+        let re = Regex::new(r"^T[A-Za-z1-9]{33}$").unwrap();
+        if !re.is_match(&self.address) {
+            return Err("invalid address".to_string())
+        }
+
+        Ok(())
+    }
+}
+
 pub struct Wallet {
     pub id: Uuid,
     pub data: WalletData,
     pub is_active: bool,
-    pub user_id: Uuid,
+    pub user_id: Option<Uuid>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct JsonWallet {
+    pub id: Option<String>,
+    pub data: Option<Value>,
+    pub is_active: Option<bool>,
+}
+
+impl Wallet {
+    pub fn into(self) -> JsonWallet {
+        JsonWallet {
+            id: Some(self.id.to_string()),
+            data: Some(json!({
+                "address": self.data.address,
+            })),
+            is_active: Some(self.is_active),
+        }
+    }
+}
+
+impl JsonWallet {
+    pub fn into(self) -> Wallet {
+        Wallet {
+            id: self.id.map_or_else(Uuid::new_v4, |id_str| Uuid::parse_str(&id_str).unwrap_or(Uuid::new_v4())),    // TODO,
+            data: self.data.unwrap().into(),
+            is_active: self.is_active.unwrap_or(false),
+            user_id: None,
+        }
+    }
 }
 
 pub struct WalletRow {
@@ -169,7 +215,7 @@ impl From<WalletRow> for Wallet {
             id: row.id,
             data: row.data.into(),
             is_active: row.is_active,
-            user_id: row.user_id
+            user_id: Some(row.user_id)
         }
     }
 }
@@ -197,7 +243,7 @@ impl Wallet {
             id: row.id,
             data: wallet_data,
             is_active: row.is_active,
-            user_id: row.user_id,
+            user_id: Some(row.user_id),
         })
     }
 
@@ -209,5 +255,52 @@ impl Wallet {
             .await?;
 
         Ok(row.into())
+    }
+
+    pub async fn list(user_id: Uuid, db: &PgPool) -> Result<Vec<Wallet>, Error> {
+        sqlx::query_as!(
+            WalletRow,
+            "SELECT * FROM wallets WHERE user_id = $1",
+            user_id
+        )
+        .fetch_all(db)
+        .await
+        .map(|rows| rows.into_iter().map(|row| row.into()).collect())
+    }
+
+    pub async fn delete(id: Uuid, user_id: Uuid, db: &PgPool) -> Result<PgQueryResult, Error> {
+        sqlx::query!(
+            "DELETE FROM wallets WHERE id = $1 AND user_id = $2",
+            id,
+            user_id
+        )
+        .execute(db)
+        .await
+    }
+
+    pub async fn update(
+        self,
+        id: Uuid,
+        user_id: Uuid,
+        db: &PgPool,
+    ) -> Result<Wallet, Error> {
+        let data: Value = json!(self.data);
+
+        sqlx::query_as!(
+            WalletRow, // Use WalletRow for the result type
+            r#"
+            UPDATE wallets
+            SET data = $1, is_active = $2
+            WHERE id = $3 AND user_id = $4
+            RETURNING *
+            "#,
+            data,
+            self.is_active,
+            id,
+            user_id
+        )
+        .fetch_one(db)
+        .await
+        .map(|row| row.into()) // Convert WalletRow into Wallet
     }
 }

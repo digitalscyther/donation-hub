@@ -6,6 +6,7 @@ use axum::middleware::{self, Next};
 use axum::response::Response;
 use log::{error, info};
 use reqwest::{Client};
+use serde_json::json;
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
@@ -16,7 +17,7 @@ mod amqp;
 mod hdwallet;
 
 use crate::error::AppError;
-use crate::models::{Donation, JsonDonation, User, Wallet};
+use crate::models::{Donation, JsonDonation, JsonWallet, User, Wallet, WalletData};
 use crate::state::AppState;
 
 #[tokio::main]
@@ -49,6 +50,11 @@ fn create_routes(state: Arc<AppState>) -> Router {
         .route("/donations/:id", get(get_donation))
         .route("/donations/:id", put(update_donation))
         .route("/donations/:id", delete(delete_donation))
+        .route("/wallets", post(create_wallet))
+        // .route("/wallets", get(get_wallets))
+        // .route("/wallets/:id", get(get_wallet))
+        // .route("/wallets/:id", put(update_wallet))
+        // .route("/wallets/:id", delete(delete_wallet))
         .layer(TraceLayer::new_for_http())
         .layer(middleware::from_fn(auth))
         .with_state(state)
@@ -67,12 +73,7 @@ async fn create_donation(
             .await
             .map_err(|_| return AppError::InvalidInput("Invalid wallet_id".to_string()))?;
     } else {
-        let (private_key, address) = hdwallet::gen_wallet(&state.http_client)
-            .await
-            .map_err(|err_msg| {
-                error!("Failed gen wallet: {}", err_msg);
-                return AppError::InternalServerError
-            })?;
+        let (private_key, address) = gen_wallet(&state.http_client).await?;
         let wallet = Wallet::create(
             &state.db, address.clone(), Some(private_key), user.id
         ).await?;
@@ -86,6 +87,16 @@ async fn create_donation(
     }
 
     Ok((StatusCode::CREATED, Json(j_out_donation)))
+}
+
+async fn gen_wallet(http_client: &Client) -> Result<(String, String), AppError> {
+    let (private_key, address) = hdwallet::gen_wallet(http_client)
+        .await
+        .map_err(|err_msg| {
+            error!("Failed gen wallet: {}", err_msg);
+            return AppError::InternalServerError
+        })?;
+    Ok((private_key, address))
 }
 
 async fn get_donation(
@@ -195,4 +206,33 @@ async fn authorize_current_user(auth_token: &str) -> Option<User> {
             None
         },
     }
+}
+
+async fn create_wallet(
+    State(state): State<Arc<AppState>>,
+    Extension(user): Extension<User>,
+    Json(mut j_in_wallet): Json<JsonWallet>,
+) -> Result<impl IntoResponse, AppError> {
+    if let Some(data) = j_in_wallet.data.clone() {
+        let data: WalletData = data.try_into().map_err(
+            |_| {
+                return AppError::InvalidInput("Invalid data".to_string())
+            }
+        )?;
+        data.validate().map_err(|err| return AppError::InvalidInput(err))?;
+    } else {
+        let (private_key, address) = gen_wallet(&state.http_client).await?;
+        j_in_wallet.data = Some(json!(WalletData { address, private_key: Some(private_key) }))
+    }
+
+    let in_wallet: Wallet = j_in_wallet.into();
+
+    let j_out_wallet: JsonWallet = Wallet::create(
+        &state.db,
+        in_wallet.data.address,
+        in_wallet.data.private_key,
+        user.id,
+    ).await?.into();
+
+    Ok((StatusCode::CREATED, Json(j_out_wallet)))
 }
