@@ -16,7 +16,7 @@ mod amqp;
 mod hdwallet;
 
 use crate::error::AppError;
-use crate::models::{Donation, JsonDonation, User};
+use crate::models::{Donation, JsonDonation, User, Wallet};
 use crate::state::AppState;
 
 #[tokio::main]
@@ -59,17 +59,31 @@ async fn create_donation(
     Extension(user): Extension<User>,
     Json(j_in_donation): Json<JsonDonation>,
 ) -> Result<impl IntoResponse, AppError> {
-    let in_donation: Donation = j_in_donation.into();
-    let (_, address) = hdwallet::gen_wallet(&state.http_client)
-        .await
-        .map_err(|err_msg| {
-            error!("Failed gen wallet: {}", err_msg);
-            return AppError::InternalServerError
-        })?;
+    let mut in_donation: Donation = j_in_donation.into();
+    let mut created_wallet = None;
+
+    if let Some(wallet_id) = in_donation.wallet_id {
+        Wallet::get(&state.db, wallet_id, user.id)
+            .await
+            .map_err(|_| return AppError::InvalidInput("Invalid wallet_id".to_string()))?;
+    } else {
+        let (private_key, address) = hdwallet::gen_wallet(&state.http_client)
+            .await
+            .map_err(|err_msg| {
+                error!("Failed gen wallet: {}", err_msg);
+                return AppError::InternalServerError
+            })?;
+        let wallet = Wallet::create(
+            &state.db, address.clone(), Some(private_key), user.id
+        ).await?;
+        in_donation.wallet_id = Some(wallet.id);
+        created_wallet = Some(wallet);
+    }
 
     let j_out_donation: JsonDonation = in_donation.create(user.id, &state.db).await?.into();
-
-    amqp::send(&address).await;
+    if let Some(wallet) = created_wallet {
+        amqp::send(&wallet.data.address).await;
+    }
 
     Ok((StatusCode::CREATED, Json(j_out_donation)))
 }

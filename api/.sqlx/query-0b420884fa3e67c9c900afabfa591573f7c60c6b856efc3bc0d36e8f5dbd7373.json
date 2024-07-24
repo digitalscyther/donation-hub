@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO donations (amount, title, description, webhook, user_id) VALUES ($1, $2, $3, $4, $5) RETURNING *",
+  "query": "INSERT INTO donations (amount, title, description, webhook, wallet_id, user_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *",
   "describe": {
     "columns": [
       {
@@ -45,6 +45,7 @@
         "Varchar",
         "Text",
         "Varchar",
+        "Uuid",
         "Uuid"
       ]
     },
@@ -58,5 +59,5 @@
       false
     ]
   },
-  "hash": "31e76fdc811ad867c833c7049c477942db60a40ceebeae63ea08334c9202b40c"
+  "hash": "0b420884fa3e67c9c900afabfa591573f7c60c6b856efc3bc0d36e8f5dbd7373"
 }
