@@ -143,7 +143,7 @@ impl User {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct WalletData {
     pub address: String,
     pub private_key: Option<String>,    // TODO cypher
@@ -164,6 +164,7 @@ impl WalletData {
     }
 }
 
+#[derive(Clone)]
 pub struct Wallet {
     pub id: Uuid,
     pub data: WalletData,
@@ -178,24 +179,24 @@ pub struct JsonWallet {
     pub is_active: Option<bool>,
 }
 
-impl Wallet {
-    pub fn into(self) -> JsonWallet {
+impl From<Wallet> for JsonWallet {
+    fn from(wallet: Wallet) -> Self {
         JsonWallet {
-            id: Some(self.id.to_string()),
+            id: Some(wallet.id.to_string()),
             data: Some(json!({
-                "address": self.data.address,
+                "address": wallet.data.address,
             })),
-            is_active: Some(self.is_active),
+            is_active: Some(wallet.is_active),
         }
     }
 }
 
-impl JsonWallet {
-    pub fn into(self) -> Wallet {
+impl From<JsonWallet> for Wallet {
+    fn from(value: JsonWallet) -> Wallet {
         Wallet {
-            id: self.id.map_or_else(Uuid::new_v4, |id_str| Uuid::parse_str(&id_str).unwrap_or(Uuid::new_v4())),    // TODO,
-            data: self.data.unwrap_or(WalletData { address: "".to_string(), private_key: None }.into()).into(),
-            is_active: self.is_active.unwrap_or(false),
+            id: value.id.map_or_else(Uuid::new_v4, |id_str| Uuid::parse_str(&id_str).unwrap_or(Uuid::new_v4())),    // TODO,
+            data: value.data.unwrap_or(WalletData { address: "".to_string(), private_key: None }.into()).into(),
+            is_active: value.is_active.unwrap_or(false),
             user_id: None,
         }
     }
@@ -233,17 +234,17 @@ impl From<WalletRow> for Wallet {
 
 impl Wallet {
     pub async fn create(
-        pool: &PgPool, address: String, private_key: Option<String>, user_id: Uuid
+        pool: &PgPool, address: String, private_key: Option<String>, is_active: bool, user_id: Uuid
     ) -> Result<Wallet, Error> {
         let data: Value = json!(WalletData { address, private_key });
 
         let row = sqlx::query!(
            "
-           INSERT INTO wallets (data, user_id)
-           VALUES ($1, $2)
+           INSERT INTO wallets (data, is_active, user_id)
+           VALUES ($1, $2, $3)
            RETURNING id, data, is_active, user_id
            ",
-           data, user_id
+           data, is_active, user_id
         )
             .fetch_one(pool)
             .await?;

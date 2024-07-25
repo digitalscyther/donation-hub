@@ -65,26 +65,9 @@ async fn create_donation(
     Extension(user): Extension<User>,
     Json(j_in_donation): Json<JsonDonation>,
 ) -> Result<impl IntoResponse, AppError> {
-    let mut in_donation: Donation = j_in_donation.into();
-    let mut created_wallet = None;
-
-    if let Some(wallet_id) = in_donation.wallet_id {
-        Wallet::get(&state.db, wallet_id, user.id)
-            .await
-            .map_err(|_| return AppError::InvalidInput("Invalid wallet_id".to_string()))?;
-    } else {
-        let (private_key, address) = gen_wallet(&state.http_client).await?;
-        let wallet = Wallet::create(
-            &state.db, address.clone(), Some(private_key), user.id
-        ).await?;
-        in_donation.wallet_id = Some(wallet.id);
-        created_wallet = Some(wallet);
-    }
+    let in_donation: Donation = j_in_donation.into();
 
     let j_out_donation: JsonDonation = in_donation.create(user.id, &state.db).await?.into();
-    if let Some(wallet) = created_wallet {
-        amqp::send(&wallet.data.address).await;
-    }
 
     Ok((StatusCode::CREATED, Json(j_out_donation)))
 }
@@ -226,12 +209,20 @@ async fn create_wallet(
 
     let in_wallet: Wallet = j_in_wallet.into();
 
-    let j_out_wallet: JsonWallet = Wallet::create(
+    let out_wallet: Wallet = Wallet::create(
         &state.db,
         in_wallet.data.address,
         in_wallet.data.private_key,
+        in_wallet.is_active,
         user.id,
-    ).await?.into();
+    ).await?;
+
+    let j_out_wallet: JsonWallet = out_wallet.clone().into();
+
+    if out_wallet.is_active {
+        let msg: amqp::Message = out_wallet.into();
+        msg.send().await;
+    }
 
     Ok((StatusCode::CREATED, Json(j_out_wallet)))
 }
@@ -277,13 +268,17 @@ async fn update_wallet(
         |_| return AppError::InvalidInput("Invalid id".to_string())
     )?;
     let in_wallet: Wallet = j_in_wallet.into();
-    let j_out_wallet: JsonWallet = in_wallet.update(id, user.id, &state.db)
+    let out_wallet: Wallet = in_wallet.update(id, user.id, &state.db)
         .await
         .map_err(|e| match e {
             sqlx::Error::RowNotFound => AppError::NotFound,
             _ => AppError::DbError(e),
-        })?
-        .into();
+        })?;
+
+    let j_out_wallet: JsonWallet = out_wallet.clone().into();
+
+    let msg: amqp::Message = out_wallet.into();
+    msg.send().await;
 
     Ok((StatusCode::OK, Json(j_out_wallet)))
 }
