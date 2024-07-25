@@ -111,6 +111,17 @@ impl Donation {
             .fetch_one(db)
             .await
     }
+
+    pub async fn ids_by_wallet_id(wallet_id: Uuid, user_id: Uuid, db: &PgPool) -> Result<Vec<Uuid>, Error> {
+        sqlx::query!(
+            "SELECT id FROM donations WHERE wallet_id = $1 AND user_id = $2",
+            wallet_id,
+            user_id
+        )
+        .fetch_all(db)
+        .await
+        .map(|rows| rows.into_iter().map(|row| row.id).collect())
+    }
 }
 
 pub async fn get_connection(db_url: &str) -> Result<PgPool, Error> {
@@ -183,7 +194,7 @@ impl JsonWallet {
     pub fn into(self) -> Wallet {
         Wallet {
             id: self.id.map_or_else(Uuid::new_v4, |id_str| Uuid::parse_str(&id_str).unwrap_or(Uuid::new_v4())),    // TODO,
-            data: self.data.unwrap().into(),
+            data: self.data.unwrap_or(WalletData { address: "".to_string(), private_key: None }.into()).into(),
             is_active: self.is_active.unwrap_or(false),
             user_id: None,
         }
@@ -268,6 +279,29 @@ impl Wallet {
         .map(|rows| rows.into_iter().map(|row| row.into()).collect())
     }
 
+    pub async fn update(
+        self,
+        id: Uuid,
+        user_id: Uuid,
+        db: &PgPool,
+    ) -> Result<Wallet, Error> {
+        sqlx::query_as!(
+            WalletRow, // Use WalletRow for the result type
+            r#"
+            UPDATE wallets
+            SET is_active = $1
+            WHERE id = $2 AND user_id = $3
+            RETURNING *
+            "#,
+            self.is_active,
+            id,
+            user_id
+        )
+        .fetch_one(db)
+        .await
+        .map(|row| row.into())
+    }
+
     pub async fn delete(id: Uuid, user_id: Uuid, db: &PgPool) -> Result<PgQueryResult, Error> {
         sqlx::query!(
             "DELETE FROM wallets WHERE id = $1 AND user_id = $2",
@@ -276,31 +310,5 @@ impl Wallet {
         )
         .execute(db)
         .await
-    }
-
-    pub async fn update(
-        self,
-        id: Uuid,
-        user_id: Uuid,
-        db: &PgPool,
-    ) -> Result<Wallet, Error> {
-        let data: Value = json!(self.data);
-
-        sqlx::query_as!(
-            WalletRow, // Use WalletRow for the result type
-            r#"
-            UPDATE wallets
-            SET data = $1, is_active = $2
-            WHERE id = $3 AND user_id = $4
-            RETURNING *
-            "#,
-            data,
-            self.is_active,
-            id,
-            user_id
-        )
-        .fetch_one(db)
-        .await
-        .map(|row| row.into()) // Convert WalletRow into Wallet
     }
 }

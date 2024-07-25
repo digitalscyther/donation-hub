@@ -46,15 +46,15 @@ async fn main() {
 fn create_routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/donations", post(create_donation))
-        .route("/donations", get(get_donations))
+        .route("/donations", get(list_donation))
         .route("/donations/:id", get(get_donation))
         .route("/donations/:id", put(update_donation))
         .route("/donations/:id", delete(delete_donation))
         .route("/wallets", post(create_wallet))
-        // .route("/wallets", get(get_wallets))
-        // .route("/wallets/:id", get(get_wallet))
-        // .route("/wallets/:id", put(update_wallet))
-        // .route("/wallets/:id", delete(delete_wallet))
+        .route("/wallets", get(list_wallet))
+        .route("/wallets/:id", get(get_wallet))
+        .route("/wallets/:id", put(update_wallet))
+        .route("/wallets/:id", delete(delete_wallet))
         .layer(TraceLayer::new_for_http())
         .layer(middleware::from_fn(auth))
         .with_state(state)
@@ -108,14 +108,14 @@ async fn get_donation(
         |_| return AppError::InvalidInput("Invalid id".to_string())
     )?;
 
-    let j_donation: JsonDonation = Donation::get(id, user.id, &state.db)
+    let j_wallet: JsonDonation = Donation::get(id, user.id, &state.db)
         .await
         .map_err(|e| match e {
             sqlx::Error::RowNotFound => AppError::NotFound,
             _ => AppError::DbError(e),
         })?
         .into();
-    Ok(Json(j_donation))
+    Ok(Json(j_wallet))
 }
 
 async fn update_donation(
@@ -158,17 +158,16 @@ async fn delete_donation(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn get_donations(
+async fn list_donation(
     State(state): State<Arc<AppState>>,
     Extension(user): Extension<User>,
 ) -> Result<impl IntoResponse, AppError> {
-    info!("{:?}", user);
     let donations: Vec<Donation> = Donation::list(user.id, &state.db)
         .await
         .map_err(AppError::DbError)?;
 
-    let j_donations: Vec<JsonDonation> = donations.into_iter().map(|donation| donation.into()).collect();
-    Ok(Json(j_donations))
+    let j_wallets: Vec<JsonDonation> = donations.into_iter().map(|donation| donation.into()).collect();
+    Ok(Json(j_wallets))
 }
 
 async fn auth(mut req: Request, next: Next) -> Result<Response, StatusCode> {
@@ -235,4 +234,91 @@ async fn create_wallet(
     ).await?.into();
 
     Ok((StatusCode::CREATED, Json(j_out_wallet)))
+}
+
+async fn list_wallet(
+    State(state): State<Arc<AppState>>,
+    Extension(user): Extension<User>,
+) -> Result<impl IntoResponse, AppError> {
+    let wallets: Vec<Wallet> = Wallet::list(user.id, &state.db)
+        .await
+        .map_err(AppError::DbError)?;
+
+    let j_wallets: Vec<JsonWallet> = wallets.into_iter().map(|wallet| wallet.into()).collect();
+    Ok(Json(j_wallets))
+}
+
+async fn get_wallet(
+    Path(id_str): Path<String>,
+    State(state): State<Arc<AppState>>,
+    Extension(user): Extension<User>,
+) -> Result<impl IntoResponse, AppError> {
+    let id = Uuid::parse_str(&id_str).map_err(
+        |_| return AppError::InvalidInput("Invalid id".to_string())
+    )?;
+
+    let j_wallet: JsonWallet = Wallet::get(&state.db, id, user.id)
+        .await
+        .map_err(|e| match e {
+            sqlx::Error::RowNotFound => AppError::NotFound,
+            _ => AppError::DbError(e),
+        })?
+        .into();
+    Ok(Json(j_wallet))
+}
+
+async fn update_wallet(
+    Path(id_str): Path<String>,
+    State(state): State<Arc<AppState>>,
+    Extension(user): Extension<User>,
+    Json(j_in_wallet): Json<JsonWallet>,
+) -> Result<impl IntoResponse, AppError> {
+    let id = Uuid::parse_str(&id_str).map_err(
+        |_| return AppError::InvalidInput("Invalid id".to_string())
+    )?;
+    let in_wallet: Wallet = j_in_wallet.into();
+    let j_out_wallet: JsonWallet = in_wallet.update(id, user.id, &state.db)
+        .await
+        .map_err(|e| match e {
+            sqlx::Error::RowNotFound => AppError::NotFound,
+            _ => AppError::DbError(e),
+        })?
+        .into();
+
+    Ok((StatusCode::OK, Json(j_out_wallet)))
+}
+
+async fn delete_wallet(
+    Path(id_str): Path<String>,
+    State(state): State<Arc<AppState>>,
+    Extension(user): Extension<User>,
+) -> Result<impl IntoResponse, AppError> {
+    let id = Uuid::parse_str(&id_str).map_err(
+        |_| return AppError::InvalidInput("Invalid id".to_string())
+    )?;
+
+    let donations_ids = Donation::ids_by_wallet_id(id, user.id, &state.db)
+        .await
+        .map_err(AppError::DbError)?;
+    if ! donations_ids.is_empty() {
+        return Err(AppError::InvalidInput(
+            format!(
+                "Сan not be deleted, because linked to donations: {}",
+                donations_ids
+                .iter()
+                .map(Uuid::to_string)
+                .collect::<Vec<String>>()
+                .join(", ")
+            )
+        ));
+    }
+
+    if Wallet::delete(id, user.id, &state.db)
+        .await
+        .map_err(AppError::DbError)?
+        .rows_affected() == 0 {
+            return Err(AppError::NotFound);
+        }
+
+    Ok(StatusCode::NO_CONTENT)
 }
