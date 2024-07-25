@@ -65,10 +65,13 @@ impl Message {
 
         let args = BasicPublishArguments::new(exchange_name, routing_key);
 
+        let mut bytes: Vec<u8> = Vec::new();
+        serde_json::to_writer(&mut bytes, &json!(self)).unwrap();
+
         channel
             .basic_publish(
                 BasicProperties::default(),
-                json!(self).to_string().into_bytes(),
+                bytes,
                 args
             )
             .await

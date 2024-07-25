@@ -5,6 +5,7 @@ use amqprs::{callbacks::{DefaultChannelCallback, DefaultConnectionCallback}, cha
 use amqprs::channel::{BasicAckArguments, Channel};
 use async_trait::async_trait;
 use log::{info};
+use serde_json::Value;
 use tokio::{task, time};
 use tokio::sync::Notify;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -29,9 +30,7 @@ impl AsyncConsumer for MyConsumer {
         content: Vec<u8>,
     ) {
         time::sleep(time::Duration::from_secs(3)).await;
-        let data = String::from_utf8(content)
-            .expect("Our bytes should be valid utf8")
-            .replace("  ", "").replace("\n", "");
+        let data: Value = serde_json::from_slice(&content).unwrap();
         info!("received: {:?}", data);
 
         if !self.no_ack {
