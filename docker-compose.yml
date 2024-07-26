@@ -25,6 +25,15 @@ services:
     networks:
       - rabbitmq_network
 
+  redis:
+    image: 'bitnami/redis:latest'
+    environment:
+      - ALLOW_EMPTY_PASSWORD=yes
+#    volumes:
+#      - ./data/redis:/bitnami/redis/data
+    networks:
+      - redis_network
+
   api:
     build:
       context: api
@@ -46,11 +55,11 @@ services:
       - .env
       - collector/.env
     networks:
-      - db_network
       - rabbitmq_network
+      - redis_network
     depends_on:
-      - postgres
       - rabbitmq
+      - redis
 
   hdwallet:
     build:
@@ -62,6 +71,8 @@ networks:
   db_network:
     driver: bridge
   rabbitmq_network:
+    driver: bridge
+  redis_network:
     driver: bridge
   hdwallet_network:
     driver: bridge

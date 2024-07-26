@@ -8,6 +8,10 @@ services:
       - 15672:15672
       - ${RABBITMQ_PORT}:5672
 
+  redis:
+    ports:
+      - ${REDIS_PORT}:6379
+
   api:
     ports:
       - ${API_PORT}:3000
