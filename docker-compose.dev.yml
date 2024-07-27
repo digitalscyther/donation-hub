@@ -19,3 +19,7 @@ services:
   hdwallet:
     ports:
       - ${HDWALLET_PORT}:8000
+
+  transactions:
+    ports:
+      - ${TRANSACTIONS_PORT}:2350

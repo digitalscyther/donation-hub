@@ -57,15 +57,27 @@ services:
     networks:
       - rabbitmq_network
       - redis_network
+      - transactions_network
     depends_on:
       - rabbitmq
       - redis
+      - transactions
 
   hdwallet:
     build:
       context: hdwallet
     networks:
       - hdwallet_network
+
+  transactions:
+    build:
+      context: transactions
+    env_file:
+      - .env
+      - transactions/.env
+    networks:
+      - db_network
+      - transactions_network
 
 networks:
   db_network:
@@ -75,4 +87,6 @@ networks:
   redis_network:
     driver: bridge
   hdwallet_network:
+    driver: bridge
+  transactions_network:
     driver: bridge

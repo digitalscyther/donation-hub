@@ -5,7 +5,7 @@ use axum::{
     Json,
 };
 use serde_json::json;
-use thiserror::Error; // Using thiserror crate for easier error definition
+use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum AppError {
