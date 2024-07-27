@@ -14,8 +14,9 @@ use serde::{Deserialize, Serialize};
 use std::str;
 
 const PREFIX: &str = "wid:";
+const RATE_LIMIT: i16 = 5;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
     address: String,
     is_active: bool,
@@ -65,7 +66,7 @@ async fn main() {
 
     let r_clone = redis.clone();
     let t2 = task::spawn(async move {
-        j_print(r_clone).await;
+        monitoring(r_clone).await;
     });
 
     let t1 = task::spawn(async move {
@@ -75,27 +76,81 @@ async fn main() {
     let _ = tokio::join!(t1, t2);
 }
 
-async fn j_print(mut redis: MultiplexedConnection) {
+async fn monitoring(mut redis: MultiplexedConnection) {
     let mut c = 0;
     loop {
         let pattern = format!("{}*", PREFIX);
-        let mut values: Vec<String> = vec!();
-        let mut iterator: AsyncIter<String> = redis.scan_match(pattern).await.unwrap();
-        while let Some(item) = iterator.next_item().await {
-            values.push(item)
+        let mut keys: Vec<String> = vec![];
+        let mut values: Vec<Vec<u8>> = vec![];
+        let mut r_clone = redis.clone();
+        let mut iterator: AsyncIter<String> = r_clone.scan_match(pattern).await.unwrap();
+        while let Some(k) = iterator.next_item().await {
+            keys.push(k);
+        }
+
+        for k in keys.into_iter() {
+            let v = redis.get(k).await.unwrap();
+            values.push(v);
         }
 
         if values.is_empty() {
             info!("[{}] Current map is empty", c);
         } else {
-            info!("[{}] Current map contents:", c);
-            for val in values.iter() {
-                info!("{:?}", val);
+            let msgs = values.iter()
+                .map(|bytes| {
+                    serde_json::from_slice::<Message>(bytes).unwrap().into()
+                })
+                .collect();
+            let ts = check_wallets(msgs).await;
+            info!("[{}] Found transactions:", c);
+            for t in ts.iter() {
+                info!("# {:?}", t);
             }
         }
         c += 1;
-        time::sleep(time::Duration::from_secs(5)).await;
     }
+}
+
+#[derive(Debug)]
+struct Transaction;
+
+async fn check_wallets(wallets: Vec<Message>) -> Vec<Transaction> {
+    let mut transactions: Vec<Transaction> = vec![];
+    let batch_size = (RATE_LIMIT + 1) as usize;
+    let mut batch: Vec<Message> = vec![];
+
+    async fn process_batch_and_sleep(b: Vec<Message>) -> (Vec<Transaction>, Vec<Message>) {
+        let (to_add, to_repeat, sleep_seconds) = process_batch(b).await;
+        if let Some(to_sleep) = sleep_seconds {
+            time::sleep(time::Duration::from_secs(to_sleep)).await;
+        }
+        (to_add, to_repeat)
+    }
+
+    for item in wallets.into_iter() {
+        match batch.len() >= batch_size {
+            true => {
+                let (to_add, to_repeat) = process_batch_and_sleep(batch).await;
+                batch = to_repeat;
+                transactions.extend(to_add);
+            },
+            false => batch.push(item)
+        }
+    }
+    if !batch.is_empty() {
+        transactions.extend(process_batch_and_sleep(batch).await.0);
+    }
+
+    return transactions;
+}
+
+async fn process_batch(batch: Vec<Message>) -> (Vec<Transaction>, Vec<Message>, Option<u64>) {
+    let mut ts = vec![];
+    for _ in 0..batch.len() {
+        ts.push(Transaction);
+    }
+    let to_retry = vec![batch[0].clone()];
+    return (ts, to_retry, Some(5));
 }
 
 async fn rabbit_fn(redis: MultiplexedConnection) {
