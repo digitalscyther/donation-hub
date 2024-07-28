@@ -97,14 +97,15 @@ impl Donation {
             Donation,
             "
             UPDATE donations
-            SET amount = $1, title = $2, description = $3, webhook = $4
-            WHERE id = $5 AND user_id = $6
+            SET amount = $1, title = $2, description = $3, webhook = $4, wallet_id = $5
+            WHERE id = $6 AND user_id = $7
             RETURNING *
             ",
             self.amount,
             self.title,
             self.description,
             self.webhook,
+            self.wallet_id,
             id,
             user_id
         )

@@ -7,6 +7,7 @@ use axum::response::Response;
 use log::{error, info};
 use reqwest::{Client};
 use serde_json::json;
+use sqlx::PgPool;
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
 
@@ -15,6 +16,7 @@ mod models;
 mod state;
 mod amqp;
 mod hdwallet;
+mod transaction;
 
 use crate::error::AppError;
 use crate::models::{Donation, JsonDonation, JsonWallet, User, Wallet, WalletData};
@@ -48,6 +50,8 @@ fn create_routes(state: Arc<AppState>) -> Router {
         .route("/donations", post(create_donation))
         .route("/donations", get(list_donation))
         .route("/donations/:id", get(get_donation))
+        .route("/donations/:id/transactions", get(get_donation_transactions))
+        .route("/donations/:id/transactions/sum", get(get_donation_transactions_sum))
         .route("/donations/:id", put(update_donation))
         .route("/donations/:id", delete(delete_donation))
         .route("/wallets", post(create_wallet))
@@ -87,18 +91,62 @@ async fn get_donation(
     State(state): State<Arc<AppState>>,
     Extension(user): Extension<User>,
 ) -> Result<impl IntoResponse, AppError> {
-    let id = Uuid::parse_str(&id_str).map_err(
+    let j_wallet: JsonDonation = get_json_donation(&id_str, user.id, &state.db).await?;
+    Ok(Json(j_wallet))
+}
+
+async fn get_json_donation(id_str: &str, user_id: Uuid, db: &PgPool) -> Result<JsonDonation, AppError> {
+    let id = Uuid::parse_str(id_str).map_err(
         |_| return AppError::InvalidInput("Invalid id".to_string())
     )?;
 
-    let j_wallet: JsonDonation = Donation::get(id, user.id, &state.db)
+    Ok(Donation::get(id, user_id, db)
         .await
         .map_err(|e| match e {
             sqlx::Error::RowNotFound => AppError::NotFound,
             _ => AppError::DbError(e),
         })?
-        .into();
-    Ok(Json(j_wallet))
+        .into())
+}
+
+async fn get_donation_transactions(
+    Path(id_str): Path<String>,
+    State(state): State<Arc<AppState>>,
+    Extension(user): Extension<User>,
+) -> Result<impl IntoResponse, AppError> {
+    let j_donation: JsonDonation = get_json_donation(&id_str, user.id, &state.db).await?;
+
+    if let Some(wid) = j_donation.wallet_id {
+        let j_wallet = get_json_wallet(&wid, user.id, &state.db).await?;
+        let wallet_data: WalletData = j_wallet.data.unwrap().into();
+        let result = transaction::get_transactions(
+           &state.http_client, &wallet_data.address,
+        ).await.map_err(|_| AppError::InternalServerError)?;
+
+        return Ok(Json(result))
+    }
+
+    Ok(Json(json!([])))
+}
+
+async fn get_donation_transactions_sum(
+    Path(id_str): Path<String>,
+    State(state): State<Arc<AppState>>,
+    Extension(user): Extension<User>,
+) -> Result<impl IntoResponse, AppError> {
+    let j_donation: JsonDonation = get_json_donation(&id_str, user.id, &state.db).await?;
+
+    if let Some(wid) = j_donation.wallet_id {
+        let j_wallet = get_json_wallet(&wid, user.id, &state.db).await?;
+        let wallet_data: WalletData = j_wallet.data.unwrap().into();
+        let result = transaction::get_transactions_sum(
+           &state.http_client, &wallet_data.address,
+        ).await.map_err(|_| AppError::InternalServerError)?;
+
+        return Ok(Json(result))
+    }
+
+    Ok(Json(json!({"result": 0})))
 }
 
 async fn update_donation(
@@ -244,18 +292,23 @@ async fn get_wallet(
     State(state): State<Arc<AppState>>,
     Extension(user): Extension<User>,
 ) -> Result<impl IntoResponse, AppError> {
-    let id = Uuid::parse_str(&id_str).map_err(
+    let j_wallet: JsonWallet = get_json_wallet(&id_str, user.id, &state.db).await?;
+
+    Ok(Json(j_wallet))
+}
+
+async fn get_json_wallet(id_str: &str, user_id: Uuid, db: &PgPool) -> Result<JsonWallet, AppError> {
+    let id = Uuid::parse_str(id_str).map_err(
         |_| return AppError::InvalidInput("Invalid id".to_string())
     )?;
 
-    let j_wallet: JsonWallet = Wallet::get(&state.db, id, user.id)
+    Ok(Wallet::get(db, id, user_id)
         .await
         .map_err(|e| match e {
             sqlx::Error::RowNotFound => AppError::NotFound,
             _ => AppError::DbError(e),
         })?
-        .into();
-    Ok(Json(j_wallet))
+        .into())
 }
 
 async fn update_wallet(
