@@ -1,10 +1,12 @@
+mod blockchain;
+
 use std::env;
 use amqprs::{callbacks::{DefaultChannelCallback, DefaultConnectionCallback}, channel::{
     BasicConsumeArguments, QueueBindArguments, QueueDeclareArguments,
 }, connection::{Connection, OpenConnectionArguments}, consumer::AsyncConsumer, BasicProperties, Deliver};
 use amqprs::channel::{BasicAckArguments, Channel};
 use async_trait::async_trait;
-use log::{info};
+use log::{error, info};
 use redis::aio::MultiplexedConnection;
 use redis::{AsyncCommands, AsyncIter};
 use tokio::{task, time};
@@ -12,6 +14,7 @@ use tokio::sync::{Notify};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use serde::{Deserialize, Serialize};
 use std::str;
+use rust_decimal::Decimal;
 
 const PREFIX: &str = "wid:";
 const RATE_LIMIT: i16 = 5;
@@ -112,7 +115,10 @@ async fn monitoring(mut redis: MultiplexedConnection) {
 }
 
 #[derive(Debug)]
-struct Transaction;
+struct Transaction {
+    id: String,
+    amount: Decimal,
+}
 
 async fn check_wallets(wallets: Vec<Message>) -> Vec<Transaction> {
     let mut transactions: Vec<Transaction> = vec![];
@@ -145,9 +151,20 @@ async fn check_wallets(wallets: Vec<Message>) -> Vec<Transaction> {
 }
 
 async fn process_batch(batch: Vec<Message>) -> (Vec<Transaction>, Vec<Message>, Option<u64>) {
-    let mut ts = vec![];
-    for _ in 0..batch.len() {
-        ts.push(Transaction);
+    let mut ts: Vec<Transaction> = vec![];
+    let mut to_retry = vec![];
+    for msg in batch.clone().into_iter() {
+        match blockchain::get_completed_transactions(&msg.address, None, None).await {
+            Ok(trs) => ts.extend(
+                trs.into_iter()
+                    .map(|(id, amount)| Transaction { id, amount })
+                    .collect::<Vec<Transaction>>()
+            ),
+            Err(e) => {
+                error!("{:?}", e);
+                to_retry.push(msg);     // TODO possible infinity loop
+            }
+        };
     }
     let to_retry = vec![batch[0].clone()];
     return (ts, to_retry, Some(5));
