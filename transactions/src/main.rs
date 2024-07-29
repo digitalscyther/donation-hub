@@ -1,12 +1,13 @@
 use axum::{extract::{Json}, http::StatusCode, routing::{get, post}, Router};
 use serde::{Deserialize, Serialize};
-use std::{clone, env};
+use std::{env};
+use std::collections::HashSet;
 use std::sync::Arc;
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Response};
 use chrono::Utc;
 use rust_decimal::Decimal;
-use log::{info, warn};
+use log::{error, info, warn};
 use serde_json::json;
 use sqlx::{Error, PgPool};
 use sqlx::types::time::OffsetDateTime;
@@ -16,6 +17,8 @@ use tower_http::trace::TraceLayer;
 mod models;
 
 use crate::models::{Transaction};
+
+const DUPLICATE_CODE: &str = "23505";
 
 #[derive(Error, Debug)]
 pub enum AppError {
@@ -97,7 +100,7 @@ async fn create(
     let response: JsonTransaction = in_transaction.create(&state.db).await.map_err(
         |err| {
             if let Error::Database(db_err) = &err {
-                if db_err.code().unwrap() == "23505" {
+                if db_err.code().unwrap() == DUPLICATE_CODE {
                     return AppError::InvalidInput("ID duplicate".to_string())
                 }
             };
@@ -106,6 +109,39 @@ async fn create(
     )?.into();
 
     Ok((StatusCode::CREATED, Json(response)))
+}
+
+async fn create_batch(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<Vec<JsonTransaction>>
+) -> Result<impl IntoResponse, AppError> {
+    let mut created: HashSet<Transaction> = HashSet::new();
+    let mut created_ids: HashSet<String> = HashSet::new();
+    let mut duplicates: HashSet<String> = HashSet::new();
+    let mut errors: HashSet<String> = HashSet::new();
+
+    for item in payload.into_iter() {
+        let transaction: Transaction = item.into();
+        match transaction.clone().create(&state.db).await {
+            Ok(tr) => {
+                created.insert(tr.clone());
+                created_ids.insert(tr.id);
+            },
+            Err(Error::Database(db_err)) if db_err.code().unwrap() == DUPLICATE_CODE => {
+                if !created_ids.contains(&transaction.id) {
+                    duplicates.insert(transaction.id);
+                }
+            },
+            Err(e) => {
+                errors.insert(transaction.id);
+                error!("Failed create transaction: {:?}", e);
+            }
+        }
+    }
+
+    let created: Vec<JsonTransaction> = created.into_iter().map(|tr| tr.into()).collect();
+
+    Ok((StatusCode::CREATED, Json(json!({"created": created, "duplicates": duplicates, "errors": errors}))))
 }
 
 async fn list(
@@ -141,6 +177,7 @@ async fn main() {
 
     let router = Router::new()
         .route("/transactions", post(create))
+        .route("/transactions/batch", post(create_batch))
         .route("/transactions/:address", get(list))
         .route("/transactions/:address/sum", get(sum))
         .layer(TraceLayer::new_for_http())

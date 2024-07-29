@@ -4,7 +4,7 @@ use sqlx::{Error, PgPool};
 use sqlx::types::time::OffsetDateTime;
 
 
-#[derive(Debug, sqlx::FromRow)]
+#[derive(Clone, Hash, Eq, PartialEq, Debug, sqlx::FromRow)]
 pub struct Transaction {
     pub id: String,
     pub amount: Decimal,
