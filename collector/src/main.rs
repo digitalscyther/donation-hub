@@ -1,12 +1,12 @@
 mod blockchain;
 
-use std::cmp::max;
 use std::env;
 use amqprs::{callbacks::{DefaultChannelCallback, DefaultConnectionCallback}, channel::{
     BasicConsumeArguments, QueueBindArguments, QueueDeclareArguments,
 }, connection::{Connection, OpenConnectionArguments}, consumer::AsyncConsumer, BasicProperties, Deliver};
 use amqprs::channel::{BasicAckArguments, Channel};
 use async_trait::async_trait;
+use futures::future::join_all;
 use log::{error, info};
 use redis::aio::MultiplexedConnection;
 use redis::{AsyncCommands, AsyncIter};
@@ -19,8 +19,7 @@ use rust_decimal::Decimal;
 use crate::blockchain::GetTransactionError;
 
 const PREFIX: &str = "wid:";
-// const RATE_LIMIT: i16 = 5;
-const RATE_LIMIT: i16 = 10;
+const RATE_LIMIT: i16 = 3;
 const MAX_TRIES: i8 = 3;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -127,7 +126,7 @@ struct Transaction {
 
 async fn check_wallets(wallets: Vec<Message>) -> Vec<Transaction> {
     let mut transactions: Vec<Transaction> = vec![];
-    let batch_size = (RATE_LIMIT + 1) as usize;
+    let batch_size = RATE_LIMIT as usize;
     let mut batch: Vec<(Message, i8)> = vec![];
 
     async fn process_batch_and_sleep(b: Vec<(Message, i8)>) -> (Vec<Transaction>, Vec<(Message, i8)>) {
@@ -161,27 +160,41 @@ async fn process_batch(batch: Vec<(Message, i8)>) -> (Vec<Transaction>, Vec<(Mes
     let mut ts: Vec<Transaction> = vec![];
     let mut to_retry: Vec<(Message, i8)> = vec![];
     let mut to_sleep_milliseconds: Option<u64> = None;
-    for (msg, tries) in batch.clone().into_iter() {
-        match blockchain::get_completed_transactions(&msg.address, None, None).await {
-            Ok(trs) => ts.extend(
-                trs.into_iter()
-                    .map(|(id, amount)| Transaction { id, amount })
-                    .collect::<Vec<Transaction>>()
-            ),
+
+    // Collect all futures
+    let futures: Vec<_> = batch.clone().into_iter().map(|(msg, tries)| {
+        async move {
+            let result = blockchain::get_completed_transactions(&msg.address, None, None).await;
+            (msg, tries, result)
+        }
+    }).collect();
+
+    let results = join_all(futures).await;
+
+    for (msg, tries, result) in results {
+        match result {
+            Ok(trs) => {
+                ts.extend(
+                    trs.into_iter()
+                        .map(|(id, amount)| Transaction { id, amount })
+                        .collect::<Vec<Transaction>>()
+                );
+            }
             Err(GetTransactionError::RetryAfter(retry)) => {
                 if tries < MAX_TRIES {
-                    to_retry.push((msg, tries+1));
+                    to_retry.push((msg, tries + 1));
                 }
                 if let Some(retry) = retry {
-                    to_sleep_milliseconds = max(to_sleep_milliseconds, Some(retry))
+                    to_sleep_milliseconds = to_sleep_milliseconds.map_or(Some(retry), |existing| Some(existing.max(retry)));
                 }
             }
             Err(GetTransactionError::Request(err)) => {
                 error!("{:?}", err);
             }
-        };
+        }
     }
-    return (ts, to_retry, to_sleep_milliseconds);
+
+    (ts, to_retry, to_sleep_milliseconds)
 }
 
 async fn rabbit_fn(redis: MultiplexedConnection) {

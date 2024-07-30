@@ -37,8 +37,13 @@ pub async fn get_completed_transactions(address: &str, start_ts: Option<i64>, en
         |err| GetTransactionError::Request(err)
     )?;
 
-    if vec![http::StatusCode::REQUEST_TIMEOUT, http::StatusCode::GATEWAY_TIMEOUT].contains(&response.status()) {
-        let retry_after: u64 = response
+    let response_status = response.status();
+    if vec![
+        http::StatusCode::FORBIDDEN,
+        http::StatusCode::REQUEST_TIMEOUT,
+        http::StatusCode::GATEWAY_TIMEOUT
+    ].contains(&response_status) {
+        let retry_after: Option<u64> = Some(response
             .headers()
             .get("retry-after")
             .and_then(|hv| hv.to_str().ok())
@@ -48,15 +53,14 @@ pub async fn get_completed_transactions(address: &str, start_ts: Option<i64>, en
                     e
                 }
             ).ok())
-            // .unwrap_or(1000);
-            .unwrap_or(0);
-        return Err(GetTransactionError::RetryAfter(Some(retry_after)));
+            .unwrap_or(1000));
+        return Err(GetTransactionError::RetryAfter(retry_after));
     }
 
     let data: Result<ApiResponse, _> = response.json().await;
 
     if let Err(err) = data {
-        error!("Failed get response: {:?}", err);
+        error!("Failed get response(code={}): {:?}", response_status, err);
         let res: Vec<(String, Decimal)> = vec![];
         return Ok(res)
     }
