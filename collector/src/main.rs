@@ -1,5 +1,6 @@
 mod blockchain;
 
+use std::cmp::max;
 use std::env;
 use amqprs::{callbacks::{DefaultChannelCallback, DefaultConnectionCallback}, channel::{
     BasicConsumeArguments, QueueBindArguments, QueueDeclareArguments,
@@ -15,9 +16,12 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 use serde::{Deserialize, Serialize};
 use std::str;
 use rust_decimal::Decimal;
+use crate::blockchain::GetTransactionError;
 
 const PREFIX: &str = "wid:";
-const RATE_LIMIT: i16 = 5;
+// const RATE_LIMIT: i16 = 5;
+const RATE_LIMIT: i16 = 10;
+const MAX_TRIES: i8 = 3;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
@@ -98,6 +102,7 @@ async fn monitoring(mut redis: MultiplexedConnection) {
 
         if values.is_empty() {
             info!("[{}] Current map is empty", c);
+            time::sleep(time::Duration::from_secs(1)).await;
         } else {
             let msgs = values.iter()
                 .map(|bytes| {
@@ -123,12 +128,14 @@ struct Transaction {
 async fn check_wallets(wallets: Vec<Message>) -> Vec<Transaction> {
     let mut transactions: Vec<Transaction> = vec![];
     let batch_size = (RATE_LIMIT + 1) as usize;
-    let mut batch: Vec<Message> = vec![];
+    let mut batch: Vec<(Message, i8)> = vec![];
 
-    async fn process_batch_and_sleep(b: Vec<Message>) -> (Vec<Transaction>, Vec<Message>) {
-        let (to_add, to_repeat, sleep_seconds) = process_batch(b).await;
-        if let Some(to_sleep) = sleep_seconds {
-            time::sleep(time::Duration::from_secs(to_sleep)).await;
+    async fn process_batch_and_sleep(b: Vec<(Message, i8)>) -> (Vec<Transaction>, Vec<(Message, i8)>) {
+        let len = b.len();
+        let (to_add, to_repeat, sleep_milliseconds) = process_batch(b).await;
+        info!("Checked batch of {}. Need to sleep milliseconds={:?}.", len, sleep_milliseconds);
+        if let Some(to_sleep) = sleep_milliseconds {
+            time::sleep(time::Duration::from_millis(to_sleep)).await;
         }
         (to_add, to_repeat)
     }
@@ -140,7 +147,7 @@ async fn check_wallets(wallets: Vec<Message>) -> Vec<Transaction> {
                 batch = to_repeat;
                 transactions.extend(to_add);
             },
-            false => batch.push(item)
+            false => batch.push((item, 0))
         }
     }
     if !batch.is_empty() {
@@ -150,24 +157,31 @@ async fn check_wallets(wallets: Vec<Message>) -> Vec<Transaction> {
     return transactions;
 }
 
-async fn process_batch(batch: Vec<Message>) -> (Vec<Transaction>, Vec<Message>, Option<u64>) {
+async fn process_batch(batch: Vec<(Message, i8)>) -> (Vec<Transaction>, Vec<(Message, i8)>, Option<u64>) {
     let mut ts: Vec<Transaction> = vec![];
-    let mut to_retry = vec![];
-    for msg in batch.clone().into_iter() {
+    let mut to_retry: Vec<(Message, i8)> = vec![];
+    let mut to_sleep_milliseconds: Option<u64> = None;
+    for (msg, tries) in batch.clone().into_iter() {
         match blockchain::get_completed_transactions(&msg.address, None, None).await {
             Ok(trs) => ts.extend(
                 trs.into_iter()
                     .map(|(id, amount)| Transaction { id, amount })
                     .collect::<Vec<Transaction>>()
             ),
-            Err(e) => {
-                error!("{:?}", e);
-                to_retry.push(msg);     // TODO possible infinity loop
+            Err(GetTransactionError::RetryAfter(retry)) => {
+                if tries < MAX_TRIES {
+                    to_retry.push((msg, tries+1));
+                }
+                if let Some(retry) = retry {
+                    to_sleep_milliseconds = max(to_sleep_milliseconds, Some(retry))
+                }
+            }
+            Err(GetTransactionError::Request(err)) => {
+                error!("{:?}", err);
             }
         };
     }
-    let to_retry = vec![batch[0].clone()];
-    return (ts, to_retry, Some(5));
+    return (ts, to_retry, to_sleep_milliseconds);
 }
 
 async fn rabbit_fn(redis: MultiplexedConnection) {

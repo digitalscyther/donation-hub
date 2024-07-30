@@ -1,4 +1,4 @@
-use log::error;
+use log::{error, warn};
 use reqwest::Error;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
@@ -15,7 +15,12 @@ struct TokenTransfer {
     quant: String,
 }
 
-pub async fn get_completed_transactions(address: &str, start_ts: Option<i64>, end_ts: Option<i64>) -> Result<Vec<(String, Decimal)>, Error> {
+pub enum GetTransactionError {
+    Request(Error),
+    RetryAfter(Option<u64>)
+}
+
+pub async fn get_completed_transactions(address: &str, start_ts: Option<i64>, end_ts: Option<i64>) -> Result<Vec<(String, Decimal)>, GetTransactionError> {
     let url = "https://apilist.tronscanapi.com/api/token_trc20/transfers";
     let mut params = vec![
         ("confirm", "true".to_string()),
@@ -28,7 +33,26 @@ pub async fn get_completed_transactions(address: &str, start_ts: Option<i64>, en
     }
 
     let url = reqwest::Url::parse_with_params(url, &params).unwrap().to_string();
-    let response = reqwest::get(&url).await?;
+    let response = reqwest::get(&url).await.map_err(
+        |err| GetTransactionError::Request(err)
+    )?;
+
+    if vec![http::StatusCode::REQUEST_TIMEOUT, http::StatusCode::GATEWAY_TIMEOUT].contains(&response.status()) {
+        let retry_after: u64 = response
+            .headers()
+            .get("retry-after")
+            .and_then(|hv| hv.to_str().ok())
+            .and_then(|hv_str| hv_str.parse::<u64>().map_err(
+                |e| {
+                    warn!("Invalid format of retry=({}): {:?}", hv_str, e.clone());
+                    e
+                }
+            ).ok())
+            // .unwrap_or(1000);
+            .unwrap_or(0);
+        return Err(GetTransactionError::RetryAfter(Some(retry_after)));
+    }
+
     let data: Result<ApiResponse, _> = response.json().await;
 
     if let Err(err) = data {
